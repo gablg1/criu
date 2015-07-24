@@ -30,6 +30,7 @@
 #include "eventfd.h"
 #include "eventpoll.h"
 #include "fsnotify.h"
+#include "mount.h"
 #include "signalfd.h"
 #include "namespaces.h"
 #include "tun.h"
@@ -157,6 +158,43 @@ void show_saved_files(void)
 }
 
 /*
+ * Workaround for the OverlayFS bug present before Kernel 4.2
+ *
+ * When a process has a file open in an OverlayFS directory,
+ * the information in /proc/<pid>/fd/<fd> and /proc/<pid>/fdinfo/<fd>
+ * is wrong, so, if --overlayfs is specified, we grab that information
+ * from the mountinfo table instead.
+ *
+ * This is done every time fill_fdlink is called. See lookup_overlayfs
+ * for more details.
+ */
+static void fixup_overlayfs(struct fd_parms *p, struct fd_link *link)
+{
+	struct mount_info *m;
+
+	if (!link)
+		return;
+
+	m = lookup_overlayfs(link->name, p->stat.st_dev, p->stat.st_ino, p->mnt_id);
+	if (!m)
+		return;
+
+	p->mnt_id = m->mnt_id;
+
+	/* Stores the correct file path in p->link->name */
+	if (strcmp("./", m->mountpoint) != 0) {
+		char buf[PATH_MAX];
+		strncpy(buf, link->name, PATH_MAX);
+
+		int n = snprintf(link->name, PATH_MAX, "%s/%s", m->mountpoint, buf + 2);
+		if (n >= PATH_MAX) {
+			pr_err("Not enough space to replace %s\n", buf);
+			return;
+		}
+	}
+}
+
+/*
  * The gen_id thing is used to optimize the comparison of shared files.
  * If two files have different gen_ids, then they are different for sure.
  * If it matches, we don't know it and have to call sys_kcmp().
@@ -206,6 +244,9 @@ int fill_fdlink(int lfd, const struct fd_parms *p, struct fd_link *link)
 	}
 
 	link->len = len + 1;
+
+	if (opts.overlayfs)
+		fixup_overlayfs((struct fd_parms *)p, link);
 	return 0;
 }
 
