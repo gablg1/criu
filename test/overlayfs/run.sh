@@ -4,14 +4,11 @@ set -eu
 
 CRIU=../../../criu
 
-ERROR=0
-
 setup() {
 	setup_mount
-	start_python > /dev/null 2>&1 &
-	BASH_PID=$!
-	PYTHON_PID=$(ps -C python | awk '/python/ { print $1 }')
-	echo "BASH_PID=$BASH_PID PYTHON_PID=$PYTHON_PID"
+	sleep 10 3>z/file &
+	PROC_PID=$!
+	echo "PROC_PID=$PROC_PID"
 	sleep 1
 }
 
@@ -22,34 +19,25 @@ setup_mount() {
 	sudo mount -t overlay -o lowerdir=a,upperdir=b,workdir=c overlayfs z
 }
 
-start_python() {
-	python << EOF
-import time
-fd = open("z/file", "w")
-time.sleep(10)
-EOF
-}
-
 check_criu() {
-	echo "Dumping $PYTHON_PID..."
-	sudo $CRIU dump -v4 -D checkpoint --shell-job --overlayfs -t $PYTHON_PID
-	if [[ $? -ne 0 ]]; then
-		ERROR=1
+	echo "Dumping $PROC_PID..."
+	if ! sudo $CRIU dump -D checkpoint --overlayfs --shell-job -t "${PROC_PID}"; then
 		echo "ERROR! dump failed"
+		return 1
 	fi
 
 	echo "Restoring..."
-	sudo $CRIU restore -d -D checkpoint --shell-job
-	if [[ $? -ne 0 ]]; then
-		ERROR=1
+	if ! sudo $CRIU restore -d -D checkpoint --shell-job; then
 		echo "ERROR! restore failed"
+		return 1
 	fi
+	return 0
 }
 
 finish() {
-	kill -INT $PYTHON_PID > /dev/null 2>&1
+	kill -INT "${PROC_PID}" > /dev/null 2>&1
 	sudo umount z
-	cd $ORIG_WD
+	cd "${ORIG_WD}"
 	rm -rf overlay_test
 }
 
@@ -57,10 +45,11 @@ main() {
 	ORIG_WD=$(pwd)
 	setup
 
-	check_criu
+	check_criu || (finish && exit 1)
 
 	finish
-	[[ $ERROR -eq 0 ]] && echo "OverlayFS C/R successful."
+	echo "OverlayFS C/R successful."
+	exit 0
 }
 
 main
